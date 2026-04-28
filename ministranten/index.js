@@ -9,19 +9,24 @@ const app = express();
 const PORT       = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_in_production';
 
-// PostgreSQL Verbindung
+// PostgreSQL Verbindung - Passwort niemals hartkodieren!
+// In Render.com die Environment Variable DATABASE_URL nutzen.
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://datenbank_minis_user:hk6dhhF4MOm4cmQvYS5e8018B9baswF6@dpg-d7mkc837uimc73ct9n8g-a/datenbank_minis',
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' 
+    ? { rejectUnauthorized: false } 
+    : false
+});
+
+pool.on('error', (err) => {
+  console.error('Unerwarteter Datenbankfehler:', err);
 });
 
 app.use(express.json({ limit: '5mb' }));
 
 // ── Serve React build ──────────────────────────────────────────────
-const CLIENT = path.join(__dirname, 'client/build');
-if (fs.existsSync(CLIENT)) {
-  app.use(express.static(CLIENT));
-}
+const CLIENT_PATH = path.join(__dirname, 'client', 'build');
+app.use(express.static(CLIENT_PATH));
 
 // ── Database Init ──────────────────────────────────────────────────
 async function initDB() {
@@ -105,10 +110,25 @@ function pbkdf2(pw, salt) {
 function makeToken(user) {
   return jwt.sign({ uid: user.id, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
 }
+
+// Wandelt Datenbank-Daten (snake_case) in Frontend-Daten (camelCase) um
 function safe(u) {
   if (!u) return null;
-  const { pw, ...rest } = u;
-  return rest;
+  return {
+    id: u.id,
+    username: u.username,
+    nm: u.nm,
+    sh: u.sh,
+    ini: u.ini,
+    role: u.role,
+    mustChangePw: u.must_change_pw,
+    joined: u.joined,
+    ein: u.ein || [],
+    abm: u.abm || [],
+    fam: u.fam,
+    notes: u.notes,
+    lastLogin: u.last_login
+  };
 }
 
 // ── Auth middleware ────────────────────────────────────────────────
@@ -128,8 +148,12 @@ function adminOnly(req, res, next) {
 
 // ── Setup ──────────────────────────────────────────────────────────
 app.get('/api/setup-status', async (_, res) => {
-  const { rows } = await pool.query('SELECT setup_done FROM config LIMIT 1');
-  res.json({ needed: !rows[0]?.setup_done });
+  try {
+    const { rows } = await pool.query('SELECT setup_done FROM config LIMIT 1');
+    res.json({ needed: !rows[0]?.setup_done });
+  } catch (e) {
+    res.json({ needed: true }); // Fallback für leere DB
+  }
 });
 
 app.post('/api/setup', async (req, res) => {
@@ -154,7 +178,7 @@ app.post('/api/setup', async (req, res) => {
     await pool.query('UPDATE config SET setup_done = true, parish = $1, city = $2', [parish, city || '']);
     await pool.query('COMMIT');
 
-    const user = { id, username: username.toLowerCase(), role: 'admin', nm: 'Administrator' };
+    const user = { id, username: username.toLowerCase(), role: 'admin', nm: 'Administrator', mustChangePw: false };
     res.json({ token: makeToken(user), user, cfg: { parish, city } });
   } catch (e) {
     await pool.query('ROLLBACK');
@@ -338,7 +362,7 @@ app.delete('/api/abmeldung/:abmId', auth, async (req, res) => {
 
 // ── Ankündigungen ──────────────────────────────────────────────────
 app.get('/api/anns', auth, async (_, res) => {
-  const { rows } = await pool.query('SELECT * FROM anns ORDER BY pinned DESC, dt DESC');
+  const { rows } = await pool.query('SELECT id, title, body, pinned, dt, author_id as "authorId" FROM anns ORDER BY pinned DESC, dt DESC');
   res.json(rows);
 });
 
@@ -367,9 +391,9 @@ app.get('/api/backup', auth, adminOnly, async (_, res) => {
 });
 
 // ── Catch-all → React ──────────────────────────────────────────────
-if (fs.existsSync(CLIENT)) {
-  app.get('*', (_, res) => res.sendFile(path.join(CLIENT, 'index.html')));
-}
+app.get('*', (req, res) => {
+  res.sendFile(path.join(CLIENT_PATH, 'index.html'));
+});
 
 // ── Helpers ────────────────────────────────────────────────────────
 function today() { return new Date().toISOString().slice(0, 10); }

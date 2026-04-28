@@ -2,7 +2,7 @@
   "name": "minis-app",
   "version": "1.0.0",
   "description": "Ministranten App mit PostgreSQL",
-  "main": "server/index.js",
+  "main": "ministranten/index.js",
   "scripts": {
     "start": "node ministranten/index.js",
     "build": "cd ministranten/client && npm install && npm run build"
