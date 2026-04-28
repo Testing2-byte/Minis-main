@@ -41,8 +41,10 @@ async function initDB() {
         id SERIAL PRIMARY KEY,
         setup_done BOOLEAN DEFAULT FALSE,
         parish TEXT,
-        city TEXT
+        city TEXT,
+        show_setup_link BOOLEAN DEFAULT TRUE
       );
+      ALTER TABLE config ADD COLUMN IF NOT EXISTS show_setup_link BOOLEAN DEFAULT TRUE;
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         username TEXT UNIQUE,
@@ -84,7 +86,7 @@ async function initDB() {
     // Initialer Config-Eintrag falls leer
     const res = await client.query('SELECT count(*) FROM config');
     if (parseInt(res.rows[0].count) === 0) {
-      await client.query('INSERT INTO config (setup_done, parish, city) VALUES (false, $1, $2)', ['', '']);
+      await client.query('INSERT INTO config (setup_done, parish, city, show_setup_link) VALUES (false, $1, $2, true)', ['', '']);
     }
   } finally {
     client.release();
@@ -153,10 +155,10 @@ function adminOnly(req, res, next) {
 // ── Setup ──────────────────────────────────────────────────────────
 app.get('/api/setup-status', wrap(async (_, res) => {
   try {
-    const { rows } = await pool.query('SELECT setup_done FROM config LIMIT 1');
-    res.json({ needed: !rows[0] || !rows[0].setup_done });
+    const { rows } = await pool.query('SELECT setup_done, show_setup_link FROM config LIMIT 1');
+    res.json({ needed: !rows[0] || !rows[0].setup_done, showSetupLink: rows[0] ? rows[0].show_setup_link : true });
   } catch (e) {
-    res.json({ needed: true }); // Fallback für leere DB
+    res.json({ needed: true, showSetupLink: true }); // Fallback für leere DB
   }
 }));
 
@@ -182,8 +184,8 @@ app.post('/api/setup', wrap(async (req, res) => {
     await pool.query('UPDATE config SET setup_done = true, parish = $1, city = $2', [parish, city || '']);
     await pool.query('COMMIT');
 
-    const user = { id, username: username.toLowerCase(), role: 'admin', nm: 'Administrator', mustChangePw: false };
-    res.json({ token: makeToken(user), user, cfg: { parish, city } });
+    const user = { id, username: username.toLowerCase(), role: 'admin', nm: 'Administrator', mustChangePw: false, showSetupLink: true };
+    res.json({ token: makeToken(user), user, cfg: { parish, city, showSetupLink: true } });
   } catch (e) {
     await pool.query('ROLLBACK');
     res.status(500).json({ error: e.message });
@@ -202,7 +204,7 @@ app.post('/api/login', wrap(async (req, res) => {
   if (!user || !(await verifyPw(password, user.pw)))
     return res.status(401).json({ error: 'Benutzername oder Passwort falsch' });
 
-  const { rows: cfg } = await pool.query('SELECT parish, city FROM config LIMIT 1');
+  const { rows: cfg } = await pool.query('SELECT parish, city, show_setup_link as "showSetupLink" FROM config LIMIT 1');
   await pool.query('UPDATE users SET last_login = $1 WHERE id = $2', [today(), user.id]);
   
   res.json({ token: makeToken(user), user: safe(user), cfg: cfg[0] || {} });
@@ -231,13 +233,13 @@ app.post('/api/change-password', auth, wrap(async (req, res) => {
 
 // ── Config ─────────────────────────────────────────────────────────
 app.get('/api/cfg', auth, wrap(async (_, res) => {
-  const { rows } = await pool.query('SELECT parish, city FROM config LIMIT 1');
-  res.json(rows[0] || { parish: '', city: '' });
+  const { rows } = await pool.query('SELECT parish, city, show_setup_link as "showSetupLink" FROM config LIMIT 1');
+  res.json(rows[0] || { parish: '', city: '', showSetupLink: true });
 }));
 app.put('/api/cfg', auth, adminOnly, wrap(async (req, res) => {
-  const { parish, city } = req.body;
-  await pool.query('UPDATE config SET parish = $1, city = $2', [parish, city]);
-  res.json({ ok: true, cfg: { parish, city } });
+  const { parish, city, showSetupLink } = req.body;
+  await pool.query('UPDATE config SET parish = $1, city = $2, show_setup_link = $3', [parish, city, showSetupLink]);
+  res.json({ ok: true, cfg: { parish, city, showSetupLink } });
 }));
 
 // ── Users ──────────────────────────────────────────────────────────

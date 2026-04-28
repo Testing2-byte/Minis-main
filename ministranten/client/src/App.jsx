@@ -156,7 +156,7 @@ function Setup({ onDone }) {
 }
 
 // ── Login ─────────────────────────────────────────────────────────
-function Login() {
+function Login({ onShowSetup, showSetupLink }) {
   const { login, cfg } = useAuth();
   const [username, setU] = useState('');
   const [password, setP] = useState('');
@@ -189,6 +189,11 @@ function Login() {
           {err && <div className="notice e">{err}</div>}
           <button className="btn p w" onClick={submit} disabled={busy} style={{ marginTop:4 }}>{busy ? 'Anmelden…' : 'Anmelden'}</button>
           <p style={{ fontSize:11, color:'var(--tx3)', textAlign:'center', marginTop:16 }}>Kein Account? Wende dich an den Administrator.</p>
+          {showSetupLink && (
+            <div style={{ textAlign:'center', marginTop:24 }}>
+              <button className="btn gh sm" onClick={onShowSetup} style={{ opacity:0.4 }} title="Ersteinrichtung">⚙️</button>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -800,7 +805,7 @@ function Statistiken() {
 // ── Einstellungen ─────────────────────────────────────────────────
 function Einstellungen() {
   const { cfg, updateCfg, changePw } = useAuth();
-  const [form, setF] = useState({ parish:cfg.parish||'', city:cfg.city||'' });
+  const [form, setF] = useState({ parish:cfg.parish||'', city:cfg.city||'', showSetupLink: !!cfg.showSetupLink });
   const [pw, setPw] = useState({ old:'', new:'', new2:'' });
   const [cfgOk, setCfgOk] = useState(false);
   const [pwErr, setPwErr] = useState('');
@@ -824,6 +829,10 @@ function Einstellungen() {
         <div className="inp2">
           <div className="fg" style={{ marginBottom:0 }}><label className="fl">Pfarreiname</label><input className="inp" value={form.parish} onChange={setFk('parish')} /></div>
           <div className="fg" style={{ marginBottom:0 }}><label className="fl">Stadt</label><input className="inp" value={form.city} onChange={setFk('city')} /></div>
+        </div>
+        <div className="tgl-r" style={{ marginTop:14 }}>
+          <span style={{ fontSize:13,color:'var(--tx2)' }}>Setup-Link auf Login-Seite anzeigen</span>
+          <label className="tgl"><input type="checkbox" checked={form.showSetupLink} onChange={e=>setF(p=>({...p,showSetupLink:e.target.checked}))}/><span className="tgl-sl"/></label>
         </div>
         <button className="btn p" style={{ marginTop:14 }} onClick={saveCfg}>{cfgOk?'✓ Gespeichert':'Speichern'}</button>
       </div>
@@ -912,15 +921,16 @@ function Root() {
   const { user } = useAuth();
   const [status, setStatus] = useState(null);
   const [splashDone, setSplash] = useState(false);
+  const [showSetupManual, setShowSetupManual] = useState(false);
 
   useEffect(() => {
-    api.setupStatus().then(d => setStatus(d)).catch(() => setStatus({ needed: false }));
+    api.setupStatus().then(d => setStatus(d)).catch(() => setStatus({ needed: false, showSetupLink: false }));
   }, []);
 
   if (!splashDone) return <Splash onDone={() => setSplash(true)} />;
   if (status === null) return null;
-  if (status.needed) return <Setup onDone={() => setStatus({ needed: false })} />;
-  if (!user) return <Login />;
+  if (status.needed || showSetupManual) return <Setup onDone={() => { setStatus(s => ({...s, needed: false})); setShowSetupManual(false); }} />;
+  if (!user) return <Login onShowSetup={() => setShowSetupManual(true)} showSetupLink={status.showSetupLink} />;
   if (user.mustChangePw) return <ChangePw />;
   return <AppShell />;
 }
