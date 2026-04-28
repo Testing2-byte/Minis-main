@@ -22,6 +22,10 @@ pool.on('error', (err) => {
   console.error('Unerwarteter Datenbankfehler:', err);
 });
 
+// Helfer: Fängt Fehler in async-Routen ab und leitet sie an den Error-Handler weiter
+const wrap = fn => (req, res, next) => 
+  Promise.resolve(fn(req, res, next)).catch(next);
+
 app.use(express.json({ limit: '5mb' }));
 
 // ── Serve React build ──────────────────────────────────────────────
@@ -147,21 +151,21 @@ function adminOnly(req, res, next) {
 }
 
 // ── Setup ──────────────────────────────────────────────────────────
-app.get('/api/setup-status', async (_, res) => {
+app.get('/api/setup-status', wrap(async (_, res) => {
   try {
     const { rows } = await pool.query('SELECT setup_done FROM config LIMIT 1');
-    res.json({ needed: !rows[0]?.setup_done });
+    res.json({ needed: !rows[0] || !rows[0].setup_done });
   } catch (e) {
     res.json({ needed: true }); // Fallback für leere DB
   }
-});
+}));
 
-app.post('/api/setup', async (req, res) => {
+app.post('/api/setup', wrap(async (req, res) => {
   const { rows: cfgRows } = await pool.query('SELECT setup_done FROM config LIMIT 1');
   if (cfgRows[0]?.setup_done) return res.status(403).json({ error: 'Bereits eingerichtet' });
 
   const { parish, city, username, password } = req.body;
-  if (!parish || !username || !password)
+  if (!parish || !username || !password) 
     return res.status(400).json({ error: 'Alle Felder ausfüllen' });
   if (password.length < 8)
     return res.status(400).json({ error: 'Passwort mind. 8 Zeichen' });
@@ -184,12 +188,12 @@ app.post('/api/setup', async (req, res) => {
     await pool.query('ROLLBACK');
     res.status(500).json({ error: e.message });
   }
-});
+}));
 
 // ── Auth ───────────────────────────────────────────────────────────
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', wrap(async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password)
+  if (!username || !password) 
     return res.status(400).json({ error: 'Benutzername und Passwort eingeben' });
 
   const { rows } = await pool.query('SELECT * FROM users WHERE username = $1', [username.trim().toLowerCase()]);
@@ -201,10 +205,10 @@ app.post('/api/login', async (req, res) => {
   const { rows: cfg } = await pool.query('SELECT parish, city FROM config LIMIT 1');
   await pool.query('UPDATE users SET last_login = $1 WHERE id = $2', [today(), user.id]);
   
-  res.json({ token: makeToken(user), user: safe(user), cfg: cfg[0] });
-});
+  res.json({ token: makeToken(user), user: safe(user), cfg: cfg[0] || {} });
+}));
 
-app.post('/api/change-password', auth, async (req, res) => {
+app.post('/api/change-password', auth, wrap(async (req, res) => {
   const { oldPassword, newPassword } = req.body;
   if (!newPassword || newPassword.length < 8)
     return res.status(400).json({ error: 'Neues Passwort mind. 8 Zeichen' });
@@ -223,26 +227,26 @@ app.post('/api/change-password', auth, async (req, res) => {
   await pool.query('UPDATE users SET pw = $1, must_change_pw = false WHERE id = $2', [hashed, req.uid]);
 
   res.json({ token: makeToken(user), user: safe({ ...user, must_change_pw: false }) });
-});
+}));
 
 // ── Config ─────────────────────────────────────────────────────────
-app.get('/api/cfg', auth, async (_, res) => {
+app.get('/api/cfg', auth, wrap(async (_, res) => {
   const { rows } = await pool.query('SELECT parish, city FROM config LIMIT 1');
-  res.json(rows[0]);
-});
-app.put('/api/cfg', auth, adminOnly, async (req, res) => {
+  res.json(rows[0] || { parish: '', city: '' });
+}));
+app.put('/api/cfg', auth, adminOnly, wrap(async (req, res) => {
   const { parish, city } = req.body;
   await pool.query('UPDATE config SET parish = $1, city = $2', [parish, city]);
   res.json({ ok: true, cfg: { parish, city } });
-});
+}));
 
 // ── Users ──────────────────────────────────────────────────────────
-app.get('/api/users', auth, async (_, res) => {
+app.get('/api/users', auth, wrap(async (_, res) => {
   const { rows } = await pool.query('SELECT * FROM users');
   res.json(rows.map(safe));
-});
+}));
 
-app.post('/api/users', auth, adminOnly, async (req, res) => {
+app.post('/api/users', auth, adminOnly, wrap(async (req, res) => {
   const { username, nm, role, password, famId, notes } = req.body;
   
   const { rows: exists } = await pool.query('SELECT id FROM users WHERE username = $1', [username.trim().toLowerCase()]);
@@ -260,9 +264,9 @@ app.post('/api/users', auth, adminOnly, async (req, res) => {
     [id, username.trim().toLowerCase(), nm, sh, ini, role, true, hashed, famId || null, notes || '', today()]
   );
   res.json({ ok: true, id });
-});
+}));
 
-app.put('/api/users/:id', auth, adminOnly, async (req, res) => {
+app.put('/api/users/:id', auth, adminOnly, wrap(async (req, res) => {
   const { nm, username, role, password, famId, notes } = req.body;
   let query = 'UPDATE users SET username = $1, role = $2, fam = $3, notes = $4';
   let params = [username.trim().toLowerCase(), role, famId || null, notes || ''];
@@ -286,53 +290,53 @@ app.put('/api/users/:id', auth, adminOnly, async (req, res) => {
   
   await pool.query(query, params);
   res.json({ ok: true });
-});
+}));
 
-app.delete('/api/users/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/users/:id', auth, adminOnly, wrap(async (req, res) => {
   if (req.params.id === req.uid)
     return res.status(400).json({ error: 'Eigenen Account nicht löschbar' });
   await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
-});
+}));
 
 // ── Familien ───────────────────────────────────────────────────────
-app.get('/api/familien', auth, async (_, res) => {
+app.get('/api/familien', auth, wrap(async (_, res) => {
   const { rows } = await pool.query('SELECT * FROM familien');
   const obj = {};
   rows.forEach(r => obj[r.id] = r);
   res.json(obj);
-});
+}));
 
-app.post('/api/familien', auth, adminOnly, async (req, res) => {
+app.post('/api/familien', auth, adminOnly, wrap(async (req, res) => {
   const id = 'f_' + Date.now();
   await pool.query('INSERT INTO familien (id, name, kinder) VALUES ($1, $2, $3)', [id, req.body.name, JSON.stringify(req.body.kinder || [])]);
   res.json({ ok: true, id });
-});
+}));
 
-app.put('/api/familien/:id', auth, adminOnly, async (req, res) => {
+app.put('/api/familien/:id', auth, adminOnly, wrap(async (req, res) => {
   await pool.query('UPDATE familien SET name = $1, kinder = $2 WHERE id = $3', [req.body.name, JSON.stringify(req.body.kinder || []), req.params.id]);
   res.json({ ok: true });
-});
+}));
 
-app.delete('/api/familien/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/familien/:id', auth, adminOnly, wrap(async (req, res) => {
   await pool.query('DELETE FROM familien WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
-});
+}));
 
 // ── Messen ─────────────────────────────────────────────────────────
-app.get('/api/messen', auth, async (_, res) => {
+app.get('/api/messen', auth, wrap(async (_, res) => {
   const { rows } = await pool.query('SELECT * FROM messen');
   res.json(rows);
-});
+}));
 
-app.post('/api/messen', auth, adminOnly, async (req, res) => {
+app.post('/api/messen', auth, adminOnly, wrap(async (req, res) => {
   const id = 'm_' + Date.now();
   const m = { id, minis: [], ...req.body };
   await pool.query('INSERT INTO messen (id, art, dt, t, notes, minis) VALUES ($1, $2, $3, $4, $5, $6)', [id, m.art, m.dt, m.t, m.notes, JSON.stringify(m.minis)]);
   res.json({ ok: true, messe: m });
-});
+}));
 
-app.put('/api/messen/:id', auth, adminOnly, async (req, res) => {
+app.put('/api/messen/:id', auth, adminOnly, wrap(async (req, res) => {
   const { art, dt, t, notes, minis } = req.body;
   await pool.query('UPDATE messen SET art = $1, dt = $2, t = $3, notes = $4, minis = $5 WHERE id = $6', [art, dt, t, notes, JSON.stringify(minis || []), req.params.id]);
 
@@ -341,44 +345,44 @@ app.put('/api/messen/:id', auth, adminOnly, async (req, res) => {
     await pool.query("UPDATE users SET ein = COALESCE(ein, '[]'::jsonb) || jsonb_build_array($1) WHERE id = ANY($2)", [dt, minis]);
   }
   res.json({ ok: true });
-});
+}));
 
-app.delete('/api/messen/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/messen/:id', auth, adminOnly, wrap(async (req, res) => {
   await pool.query('DELETE FROM messen WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
-});
+}));
 
 // ── Abmeldungen ────────────────────────────────────────────────────
-app.post('/api/abmeldung', auth, async (req, res) => {
+app.post('/api/abmeldung', auth, wrap(async (req, res) => {
   const entry = { id: 'abm_' + Date.now(), ...req.body };
   await pool.query("UPDATE users SET abm = COALESCE(abm, '[]'::jsonb) || $1::jsonb WHERE id = $2", [JSON.stringify(entry), req.uid]);
   res.json({ ok: true, abm: entry });
-});
+}));
 
-app.delete('/api/abmeldung/:abmId', auth, async (req, res) => {
+app.delete('/api/abmeldung/:abmId', auth, wrap(async (req, res) => {
   await pool.query("UPDATE users SET abm = (SELECT jsonb_agg(x) FROM jsonb_array_elements(abm) x WHERE x->>'id' <> $1) WHERE id = $2", [req.params.abmId, req.uid]);
   res.json({ ok: true });
-});
+}));
 
 // ── Ankündigungen ──────────────────────────────────────────────────
-app.get('/api/anns', auth, async (_, res) => {
+app.get('/api/anns', auth, wrap(async (_, res) => {
   const { rows } = await pool.query('SELECT id, title, body, pinned, dt, author_id as "authorId" FROM anns ORDER BY pinned DESC, dt DESC');
   res.json(rows);
-});
+}));
 
-app.post('/api/anns', auth, adminOnly, async (req, res) => {
+app.post('/api/anns', auth, adminOnly, wrap(async (req, res) => {
   const a = { id: 'a_' + Date.now(), dt: today(), author_id: req.uid, ...req.body };
   await pool.query('INSERT INTO anns (id, title, body, pinned, dt, author_id) VALUES ($1, $2, $3, $4, $5, $6)', [a.id, a.title, a.body, a.pinned, a.dt, a.author_id]);
   res.json({ ok: true, ann: a });
-});
+}));
 
-app.delete('/api/anns/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/anns/:id', auth, adminOnly, wrap(async (req, res) => {
   await pool.query('DELETE FROM anns WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
-});
+}));
 
 // ── Backup ─────────────────────────────────────────────────────────
-app.get('/api/backup', auth, adminOnly, async (_, res) => {
+app.get('/api/backup', auth, adminOnly, wrap(async (_, res) => {
   const cfg = await pool.query('SELECT * FROM config');
   const users = await pool.query('SELECT * FROM users');
   const messen = await pool.query('SELECT * FROM messen');
@@ -388,11 +392,19 @@ app.get('/api/backup', auth, adminOnly, async (_, res) => {
   const data = { cfg: cfg.rows[0], users: users.rows, messen: messen.rows, familien: familien.rows, anns: anns.rows };
   res.setHeader('Content-Disposition', `attachment; filename="backup-${today()}.json"`);
   res.json(data);
-});
+}));
 
 // ── Catch-all → React ──────────────────────────────────────────────
 app.get('*', (req, res) => {
   res.sendFile(path.join(CLIENT_PATH, 'index.html'));
+});
+
+// Globaler Error Handler - Verhindert leere Antworten (JSON.parse Fehler)
+app.use((err, req, res, next) => {
+  console.error('SERVER FEHLER:', err);
+  res.status(err.status || 500).json({ 
+    error: err.message || 'Ein unerwarteter Serverfehler ist aufgetreten.' 
+  });
 });
 
 // ── Helpers ────────────────────────────────────────────────────────
